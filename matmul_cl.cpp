@@ -239,26 +239,26 @@ int main(int argc, char *argv[])
     std::ofstream result_file;
     result_file.open(argv[5]);
 
-    TestConfig config = TestConfig(nrows, ncols, ncols2, 1);
-    long time = run_test(config);
-    std::cout << "time=" << time << std::endl;
+    // TestConfig config = TestConfig(nrows, ncols, ncols2, 1);
+    // long time = run_test(config);
+    // std::cout << "time=" << time << std::endl;
 
-    // Matrix A = Matrix(nrows, ncols);
-    // A.randomize_data();
-    // Matrix B = Matrix(ncols, ncols2);
-    // B.randomize_data();
+    Matrix A = Matrix(nrows, ncols);
+    A.randomize_data();
+    Matrix B = Matrix(ncols, ncols2);
+    B.randomize_data();
 
-    // auto t1 = Clock::now();
-    // Matrix::mult_mat(A, B).print();
-    // auto t2 = Clock::now();
-    // size_t t = (t2 - t1).count();
+    auto t1 = Clock::now();
+    Matrix::mult_mat(A, B).print();
+    auto t2 = Clock::now();
+    size_t t = (t2 - t1).count();
 
-    // t1 = Clock::now();
-    // Matrix::parallel_mult_mat(A, B, thread_count).print();
-    // t2 = Clock::now();
+    t1 = Clock::now();
+    Matrix::parallel_mult_mat(A, B).print();
+    t2 = Clock::now();
 
-    // std::cout << "time1=" << t << std::endl;
-    // std::cout << "time2=" << (t2 - t1).count() << std::endl;
+    std::cout << "time1=" << t << std::endl;
+    std::cout << "time2=" << (t2 - t1).count() << std::endl;
 
     result_file.close();
 
