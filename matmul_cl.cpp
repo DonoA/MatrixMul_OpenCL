@@ -9,9 +9,10 @@
 #include <vector>
 #include <future>
 #include <math.h>
+#include<CL/cl.hpp>
 
-#define max(a, b) ((a > b) ? (a) : (b))
-#define min(a, b) ((a < b) ? (a) : (b))
+#define max(a, b) ((a) > (b) ? (a) : (b))
+#define min(a, b) ((a) < (b) ? (a) : (b))
 
 #define TEST_COUNT 1
 #define SUB_MATRIX_SIZE 65
@@ -35,8 +36,6 @@ class Matrix
 {
 public:
     size_t cols, rows;
-
-private:
     double *data;
 
 public:
@@ -59,6 +58,11 @@ public:
         this->data = new double[cols * rows];
         std::copy(src.data, src.data + (cols * rows), this->data);
         return *this;
+    }
+
+    size_t total_size()
+    {
+        return cols * rows;
     }
 
     void randomize_data()
@@ -144,123 +148,74 @@ public:
 
         return result;
     }
-
-private:
-    inline static void _parallel_mult_mat_square(const Matrix &A, const Matrix &B, Matrix &result, 
-        size_t dim, size_t i_start, size_t j_start, size_t k_start)
-    {
-        size_t i_end = min(i_start + dim, B.cols);
-        size_t j_end = min(j_start + dim, B.rows);
-        size_t k_end = min(k_start + dim, A.rows);
-        for (size_t i = i_start; i < i_end; i++)
-        {
-            for (size_t j = j_start; j < j_end; j++)
-            {
-                double B_val = B.get(j, i);
-                for (size_t k = k_start; k < k_end; k++)
-                {
-                    result.get_mut(k, i) += A.get(k, j) * B_val;
-                }
-            }
-        }
-    } 
-
-public:
-    static Matrix parallel_mult_mat(const Matrix &A, const Matrix &B)
-    {
-        Matrix result = Matrix(A.rows, B.cols);
-
-        size_t row_boxes = ceil((float) result.rows/SUB_MATRIX_SIZE);
-        size_t col_boxes = ceil((float) result.cols/SUB_MATRIX_SIZE);
-        #pragma omp parallel for
-        for(size_t x = 0; x < (row_boxes * col_boxes); x++)
-        {
-            size_t i = x % col_boxes;
-            size_t k = x / col_boxes;
-            for(size_t j = 0; j < A.cols; j += SUB_MATRIX_SIZE)
-            {
-                _parallel_mult_mat_square(A, B, result, SUB_MATRIX_SIZE, i * SUB_MATRIX_SIZE, j, k * SUB_MATRIX_SIZE);
-            }
-        }
-
-        return result;
-    }
 };
 
-class TestConfig
+int main() 
 {
-public:
-    size_t nrows;
-    size_t ncols;
-    size_t ncols2;
-    size_t test_count;
+    cl_int err;
+    size_t rows = 4;
+    size_t cols = 4;
+    size_t cols2 = 4;
 
-    TestConfig(size_t nrows, size_t ncols, size_t ncols2, size_t test_count)
-        : nrows(nrows), ncols(ncols), ncols2(ncols2), test_count(test_count)
-    { }
-};
-
-size_t run_test(TestConfig config)
-{
-    
-    Matrix A = Matrix(config.nrows, config.ncols);
+    Matrix A(rows, cols);
     A.randomize_data();
-    Matrix B = Matrix(config.ncols, config.ncols2);
+    Matrix B(cols, cols2);
     B.randomize_data();
 
-    size_t min_time = -1;
-    for (size_t i = 0; i < config.test_count; i++)
-    {
-        // we need cols threads, each will go through and do the mul for a column, once a column is complete, it will go back and do the second mul, and so on
-        auto t1 = Clock::now();
-        Matrix result = Matrix::parallel_mult_mat(A, B);
-        auto t2 = Clock::now();
-        size_t t = (t2 - t1).count();
-        min_time = min(min_time, t);
-    }
+    Matrix C(rows, cols2);
 
-    return min_time;
-}
+    std::vector<cl::Platform> platforms;
+    cl::Platform::get(&platforms);
 
-int main(int argc, char *argv[])
-{
-    if (argc != 6)
-    {
-        std::cerr << "usage: matmult nrows ncols ncols2 thread_count outfile" << std::endl;
-        return EXIT_FAILURE;
-    }
+    auto platform = platforms.front();
+    std::vector<cl::Device> devices;
+    platform.getDevices(CL_DEVICE_TYPE_GPU, &devices);
 
-    size_t nrows, ncols, ncols2, thread_count;
-    nrows = atoi(argv[1]);
-    ncols = atoi(argv[2]);
-    ncols2 = atoi(argv[3]);
-    thread_count = atoi(argv[4]);
+    auto device = devices.front();
+    std::ifstream clFile("matmul.cl");
+    std::string src(std::istreambuf_iterator<char>(clFile), (std::istreambuf_iterator<char>()));
 
-    std::ofstream result_file;
-    result_file.open(argv[5]);
+    cl::Program::Sources sources(1, std::make_pair(src.c_str(), src.length() + 1));
 
-    // TestConfig config = TestConfig(nrows, ncols, ncols2, 1);
-    // long time = run_test(config);
-    // std::cout << "time=" << time << std::endl;
+    cl::Context context(device);
+    cl::Program program(context, sources);
 
-    Matrix A = Matrix(nrows, ncols);
-    A.randomize_data();
-    Matrix B = Matrix(ncols, ncols2);
-    B.randomize_data();
+    err = program.build("-cl-std=CL1.2");
+    cl::CommandQueue queue(context, device);
 
-    auto t1 = Clock::now();
+    cl::Buffer bufA(context, CL_MEM_READ_ONLY, A.total_size()*sizeof(double), NULL, NULL);
+    cl::Buffer bufB(context, CL_MEM_READ_ONLY, B.total_size()*sizeof(double), NULL, NULL);
+    cl::Buffer bufC(context, CL_MEM_READ_WRITE, C.total_size()*sizeof(double), NULL, NULL);
+
+    err = queue.enqueueWriteBuffer(bufA, CL_TRUE, 0, A.total_size()*sizeof(double), A.data);
+    err = queue.enqueueWriteBuffer(bufB, CL_TRUE, 0, B.total_size()*sizeof(double), B.data);
+    err = queue.enqueueWriteBuffer(bufC, CL_TRUE, 0, C.total_size()*sizeof(double), C.data);
+
+
+    // cl::Buffer memBuf(context, CL_MEM_WRITE_ONLY | CL_MEM_HOST_READ_ONLY, sizeof(buf));
+    cl::Kernel kernel(program, "parallel_mult_mat", &err);
+    kernel.setArg<unsigned long>(0, rows);
+    kernel.setArg<unsigned long>(1, cols2);
+    kernel.setArg<unsigned long>(2, cols);
+    kernel.setArg(3, bufA);
+    kernel.setArg(4, bufB);
+    kernel.setArg(5, bufC);
+
+    cl::NDRange local(min(rows, 32), min(cols2, 32));
+    cl::NDRange global(rows, cols2);
+
+    std::vector<cl::Event> events;
+
+    err = queue.enqueueNDRangeKernel(kernel, cl::NullRange, global, local, &events, NULL);
+    err = cl::WaitForEvents(events);
+    err = queue.enqueueReadBuffer(bufC, CL_TRUE, 0, C.total_size()*sizeof(double), C.data, NULL, NULL);
+
+    std::cout << "A:" << std::endl;
+    A.print();
+    std::cout << "B:" << std::endl;
+    B.print();
+    std::cout << "C:" << std::endl;
+    C.print();
+    std::cout << "AxB:" << std::endl;
     Matrix::mult_mat(A, B).print();
-    auto t2 = Clock::now();
-    size_t t = (t2 - t1).count();
-
-    t1 = Clock::now();
-    Matrix::parallel_mult_mat(A, B).print();
-    t2 = Clock::now();
-
-    std::cout << "time1=" << t << std::endl;
-    std::cout << "time2=" << (t2 - t1).count() << std::endl;
-
-    result_file.close();
-
-    return EXIT_SUCCESS;
 }
