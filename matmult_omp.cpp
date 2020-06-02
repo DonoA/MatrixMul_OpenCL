@@ -9,11 +9,10 @@
 #include <vector>
 #include <future>
 #include <math.h>
-#include <CL/cl.hpp>
 #include <time.h>
 
-#define max(a, b) ((a) > (b) ? (a) : (b))
-#define min(a, b) ((a) < (b) ? (a) : (b))
+#define max(a, b) ((a > b) ? (a) : (b))
+#define min(a, b) ((a < b) ? (a) : (b))
 
 #define TEST_COUNT 1
 #define SUB_MATRIX_SIZE 65
@@ -37,6 +36,8 @@ class Matrix
 {
 public:
     size_t cols, rows;
+
+private:
     double *data;
 
 public:
@@ -59,11 +60,6 @@ public:
         this->data = new double[cols * rows];
         std::copy(src.data, src.data + (cols * rows), this->data);
         return *this;
-    }
-
-    size_t total_size()
-    {
-        return cols * rows;
     }
 
     void randomize_data()
@@ -149,92 +145,74 @@ public:
 
         return result;
     }
+
+private:
+    inline static void _parallel_mult_mat_square(const Matrix &A, const Matrix &B, Matrix &result, size_t nthreads, 
+        size_t dim, size_t i_start, size_t j_start, size_t k_start)
+    {
+        size_t i_end = min(i_start + dim, B.cols);
+        size_t j_end = min(j_start + dim, B.rows);
+        size_t k_end = min(k_start + dim, A.rows);
+        for (size_t i = i_start; i < i_end; i++)
+        {
+            for (size_t j = j_start; j < j_end; j++)
+            {
+                double B_val = B.get(j, i);
+                for (size_t k = k_start; k < k_end; k++)
+                {
+                    result.get_mut(k, i) += A.get(k, j) * B_val;
+                }
+            }
+        }
+    } 
+
+public:
+    static Matrix parallel_mult_mat(const Matrix &A, const Matrix &B, size_t nthreads)
+    {
+        Matrix result = Matrix(A.rows, B.cols);
+
+        size_t row_boxes = ceil((float) result.rows/SUB_MATRIX_SIZE);
+        size_t col_boxes = ceil((float) result.cols/SUB_MATRIX_SIZE);
+        #pragma omp parallel for num_threads(nthreads)
+        for(size_t x = 0; x < (row_boxes * col_boxes); x++)
+        {
+            size_t i = x % col_boxes;
+            size_t k = x / col_boxes;
+            for(size_t j = 0; j < A.cols; j += SUB_MATRIX_SIZE)
+            {
+                _parallel_mult_mat_square(A, B, result, nthreads, SUB_MATRIX_SIZE, i * SUB_MATRIX_SIZE, j, k * SUB_MATRIX_SIZE);
+            }
+        }
+
+        return result;
+    }
 };
 
-int main(int argc, char * argv[]) 
+int main(int argc, char *argv[])
 {
-    if (argc != 4)
+    if (argc != 5)
     {
-        std::cerr << "usage: matmult nrows ncols ncols2" << std::endl;
+        std::cerr << "usage: matmult nrows ncols ncols2 thread_count" << std::endl;
         return EXIT_FAILURE;
     }
 
-    size_t rows, cols, cols2;
-    rows = atoi(argv[1]);
-    cols = atoi(argv[2]);
-    cols2 = atoi(argv[3]);
+    size_t nrows, ncols, ncols2, thread_count;
+    nrows = atoi(argv[1]);
+    ncols = atoi(argv[2]);
+    ncols2 = atoi(argv[3]);
+    thread_count = atoi(argv[4]);
 
-    cl_int err;
-
-    Matrix A(rows, cols);
+    Matrix A = Matrix(nrows, ncols);
     A.randomize_data();
-    Matrix B(cols, cols2);
+    Matrix B = Matrix(ncols, ncols2);
     B.randomize_data();
 
-    Matrix C(rows, cols2);
-
     auto t1 = clock();
-    std::vector<cl::Platform> platforms;
-    cl::Platform::get(&platforms);
-
-    auto platform = platforms.front();
-    std::vector<cl::Device> devices;
-    platform.getDevices(CL_DEVICE_TYPE_GPU, &devices);
-
-    auto device = devices.front();
-    std::ifstream clFile("matmul.cl");
-    std::string src(std::istreambuf_iterator<char>(clFile), (std::istreambuf_iterator<char>()));
-
-    cl::Program::Sources sources(1, std::make_pair(src.c_str(), src.length() + 1));
-
-    cl::Context context(device);
-    cl::Program program(context, sources);
-
-    err = program.build("-cl-std=CL1.2");
-    cl::CommandQueue queue(context, device);
+    Matrix::parallel_mult_mat(A, B, thread_count);
     auto t2 = clock();
-    double t = (double) (t2 - t1) / CLOCKS_PER_SEC;
-    std::cout << "init time=" << t << std::endl;
-    
-    t1 = clock();
-    cl::Buffer bufA(context, CL_MEM_READ_ONLY, A.total_size()*sizeof(double), NULL, NULL);
-    cl::Buffer bufB(context, CL_MEM_READ_ONLY, B.total_size()*sizeof(double), NULL, NULL);
-    cl::Buffer bufC(context, CL_MEM_READ_WRITE, C.total_size()*sizeof(double), NULL, NULL);
+    double t = double (t2 - t1) / CLOCKS_PER_SEC;
 
-    err = queue.enqueueWriteBuffer(bufA, CL_TRUE, 0, A.total_size()*sizeof(double), A.data);
-    err = queue.enqueueWriteBuffer(bufB, CL_TRUE, 0, B.total_size()*sizeof(double), B.data);
-    err = queue.enqueueWriteBuffer(bufC, CL_TRUE, 0, C.total_size()*sizeof(double), C.data);
-    t2 = clock();
-    t = (double) (t2 - t1) / CLOCKS_PER_SEC;
-    std::cout << "copy time=" << t << std::endl;
+    std::cout << "time=" << t << std::endl;
 
-    t1 = clock();
-    cl::Kernel kernel(program, "parallel_mult_mat", &err);
-    kernel.setArg<unsigned long>(0, rows);
-    kernel.setArg<unsigned long>(1, cols2);
-    kernel.setArg<unsigned long>(2, cols);
-    kernel.setArg(3, bufA);
-    kernel.setArg(4, bufB);
-    kernel.setArg(5, bufC);
-
-    cl::NDRange local(min(rows, 32), min(cols2, 32));
-    cl::NDRange global(rows, cols2);
-
-    std::vector<cl::Event> events;
-
-    err = queue.enqueueNDRangeKernel(kernel, cl::NullRange, global, local, &events, NULL);
-    err = cl::WaitForEvents(events);
-    err = queue.enqueueReadBuffer(bufC, CL_TRUE, 0, C.total_size()*sizeof(double), C.data, NULL, NULL);
-    t2 = clock();
-    t = (double) (t2 - t1) / CLOCKS_PER_SEC;
-    std::cout << "multiply time=" << t << std::endl;
-
-    // std::cout << "A:" << std::endl;
-    // A.print();
-    // std::cout << "B:" << std::endl;
-    // B.print();
-    // std::cout << "C:" << std::endl;
-    // C.print();
-    // std::cout << "AxB:" << std::endl;
-    // Matrix::mult_mat(A, B).print();
+    return EXIT_SUCCESS;
 }
