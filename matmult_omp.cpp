@@ -15,7 +15,7 @@
 #define min(a, b) ((a < b) ? (a) : (b))
 
 #define TEST_COUNT 1
-#define SUB_MATRIX_SIZE 65
+#define SUB_MATRIX_SIZE 32
 // #define SUB_MATRIX_SIZE 2
 
 typedef std::chrono::high_resolution_clock Clock;
